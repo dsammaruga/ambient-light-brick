@@ -1,0 +1,8 @@
+name: Ambient Light basic
+description: Prints simulated illuminance readings from the Ambient Light brick.
+icon: 💡
+ports: []
+bricks:
+- dsammaruga:ambient_light:
+    variables:
+      LIGHT_THRESHOLD_LUX: "150"

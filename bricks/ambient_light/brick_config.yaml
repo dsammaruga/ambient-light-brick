@@ -1,9 +1,10 @@
 id: dsammaruga:ambient_light
-version: 1.0.1
+version: 1.0.2
 name: Ambient Light
 description: Reads an ambient light sensor and reports illuminance in lux with a dark/bright state.
 category: miscellaneous
 author: Dario Sammaruga
+author_handle: dsammaruga
 brick_repo: https://github.com/dsammaruga/ambient-light-brick
 license: MPL-2.0
 variables:

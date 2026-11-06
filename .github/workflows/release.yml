@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Release workflow for an App Lab brick repository.
+#
+# Publish a release on GitHub (from the UI, or `gh release create <tag>`): this
+# workflow builds the zip of the repository tree at the tag, attaches it to the
+# release together with its SHA-256, and appends to the release notes the two
+# values the App Bricks catalog submission form asks for, with a link to the
+# form already filled in. The tag must equal the `version` in brick_config.yaml,
+# with or without a leading "v".
+#
+# Copy this file into .github/workflows/ of your brick repository and set
+# REGISTRY to the catalog repository.
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+env:
+  REGISTRY: dsammaruga/third-party-bricks-test
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Check the brick layout and the version
+        id: brick
+        run: |
+          set -euo pipefail
+          folders=(bricks/*/)
+          if [ "${#folders[@]}" -ne 1 ] || [ ! -d "${folders[0]}" ]; then
+            echo "::error::expected exactly one folder under bricks/"; exit 1
+          fi
+          name=$(basename "${folders[0]%/}")
+          config="bricks/$name/brick_config.yaml"
+          for f in __init__.py brick_config.yaml README.md; do
+            [ -f "bricks/$name/$f" ] || { echo "::error::bricks/$name/$f is missing"; exit 1; }
+          done
+          id=$(sed -n 's/^id:[[:space:]]*//p' "$config" | tr -d '"'"'"' ')
+          version=$(sed -n 's/^version:[[:space:]]*//p' "$config" | tr -d '"'"'"' ')
+          [ "${id#*:}" = "$name" ] || { echo "::error::folder bricks/$name does not match id '$id'"; exit 1; }
+          [ "${TAG#v}" = "$version" ] || { echo "::error::tag '$TAG' does not match version '$version' in $config"; exit 1; }
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build the zip and its SHA-256
+        id: zip
+        env:
+          NAME: ${{ steps.brick.outputs.name }}
+          VERSION: ${{ steps.brick.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          file="$NAME-$VERSION.zip"
+          # the tracked tree at the zip root: bricks/<name>/..., LICENSE, README.md, ...
+          git archive --format=zip -o "dist/$file" "$TAG"
+          sha=$(sha256sum "dist/$file" | cut -d' ' -f1)
+          printf '%s  %s\n' "$sha" "$file" > "dist/$file.sha256"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          unzip -l "dist/$file"
+
+      - name: Attach the zip to the release
+        env:
+          FILE: ${{ steps.zip.outputs.file }}
+        run: gh release upload "$TAG" "dist/$FILE" "dist/$FILE.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Append the submission details to the release notes
+        env:
+          FILE: ${{ steps.zip.outputs.file }}
+          SHA: ${{ steps.zip.outputs.sha }}
+          NOTES: ${{ github.event.release.body }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$FILE"
+          form=$(python3 -c 'import sys, urllib.parse as u; print("https://github.com/" + sys.argv[1] + "/issues/new?" + u.urlencode({"template": "submit-brick.yml", "zip-url": sys.argv[2], "sha256": sys.argv[3]}))' "$REGISTRY" "$url" "$SHA")
+          {
+            printf '%s\n\n' "$NOTES"
+            printf '## Submit to the App Bricks catalog\n\n'
+            printf -- '- Zip URL: %s\n' "$url"
+            printf -- '- SHA-256: `%s`\n\n' "$SHA"
+            printf '[Open the submission form with these values](%s)\n' "$form"
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
+          echo "zip: $url"
+          echo "sha256: $SHA"

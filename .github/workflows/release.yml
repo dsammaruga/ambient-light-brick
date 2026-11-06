@@ -4,7 +4,7 @@
 #
 # Publish a release on GitHub (from the UI, or `gh release create <tag>`): this
 # workflow builds the zip of the repository tree at the tag, attaches it to the
-# release together with its SHA-256, and appends to the release notes the two
+# release, and appends to the release notes the zip URL and its SHA-256, the two
 # values the App Bricks catalog submission form asks for, with a link to the
 # form already filled in. The tag must equal the `version` in brick_config.yaml,
 # with or without a leading "v".
@@ -66,7 +66,6 @@ jobs:
           # the tracked tree at the zip root: bricks/<name>/..., LICENSE, README.md, ...
           git archive --format=zip -o "dist/$file" "$TAG"
           sha=$(sha256sum "dist/$file" | cut -d' ' -f1)
-          printf '%s  %s\n' "$sha" "$file" > "dist/$file.sha256"
           echo "file=$file" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           unzip -l "dist/$file"
@@ -74,7 +73,7 @@ jobs:
       - name: Attach the zip to the release
         env:
           FILE: ${{ steps.zip.outputs.file }}
-        run: gh release upload "$TAG" "dist/$FILE" "dist/$FILE.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$TAG" "dist/$FILE" --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Append the submission details to the release notes
         env:

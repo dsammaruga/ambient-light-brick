@@ -1,4 +1,6 @@
-# SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 BCMI LABS SA
+#
+# SPDX-License-Identifier: MIT
 #
 # Release workflow for an App Lab brick repository.
 #
@@ -9,8 +11,8 @@
 # form already filled in. The tag must equal the `version` in brick_config.yaml,
 # with or without a leading "v".
 #
-# Copy this file into .github/workflows/ of your brick repository and set
-# REGISTRY to the catalog repository.
+# Copy this file to .github/workflows/release.yml of your brick repository.
+# REGISTRY is the catalog repository the submission form belongs to.
 name: Release
 
 on:
@@ -21,7 +23,7 @@ permissions:
   contents: write
 
 env:
-  REGISTRY: dsammaruga/third-party-bricks-test
+  REGISTRY: bcmi-labs/brick-registry
 
 jobs:
   package:

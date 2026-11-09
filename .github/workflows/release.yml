@@ -5,11 +5,14 @@
 # Release workflow for an App Lab brick repository.
 #
 # Publish a release on GitHub (from the UI, or `gh release create <tag>`): this
-# workflow builds the zip of the repository tree at the tag, attaches it to the
+# workflow builds the zip of the repository tree at the tag, checks it with the
+# same rules the registry bot applies to a submission (layout, one brick,
+# required files, brick_config.yaml fields, tag = version), attaches it to the
 # release, and appends to the release notes the zip URL and its SHA-256, the two
 # values the App Bricks catalog submission form asks for, with a link to the
-# form already filled in. The tag must equal the `version` in brick_config.yaml,
-# with or without a leading "v".
+# form already filled in. A zip that would be rejected by the registry fails
+# here, before the release carries it, and the release notes say so with a
+# link to the run.
 #
 # Copy this file to .github/workflows/release.yml of your brick repository.
 # REGISTRY is the catalog repository the submission form belongs to.
@@ -36,37 +39,150 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name }}
 
-      - name: Check the brick layout and the version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --quiet "pyyaml==6.0.2"
+
+      - name: Build the zip of the tagged tree
+        run: |
+          mkdir -p dist
+          # the tracked tree at the zip root: bricks/<name>/..., LICENSE, README.md, ...
+          git archive --format=zip -o dist/brick.zip "$TAG"
+
+      # Mirror of the checks in .github/scripts/submit.py of the registry
+      # (inspect_zip and read_config). Keep the two in sync.
+      - name: Check the zip as the registry bot will
         id: brick
         run: |
-          set -euo pipefail
-          folders=(bricks/*/)
-          if [ "${#folders[@]}" -ne 1 ] || [ ! -d "${folders[0]}" ]; then
-            echo "::error::expected exactly one folder under bricks/"; exit 1
-          fi
-          name=$(basename "${folders[0]%/}")
-          config="bricks/$name/brick_config.yaml"
-          for f in __init__.py brick_config.yaml README.md; do
-            [ -f "bricks/$name/$f" ] || { echo "::error::bricks/$name/$f is missing"; exit 1; }
-          done
-          id=$(sed -n 's/^id:[[:space:]]*//p' "$config" | tr -d '"'"'"' ')
-          version=$(sed -n 's/^version:[[:space:]]*//p' "$config" | tr -d '"'"'"' ')
-          [ "${id#*:}" = "$name" ] || { echo "::error::folder bricks/$name does not match id '$id'"; exit 1; }
-          [ "${TAG#v}" = "$version" ] || { echo "::error::tag '$TAG' does not match version '$version' in $config"; exit 1; }
-          echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          python - dist/brick.zip "$TAG" <<'PY'
+          import re, sys, zipfile
+          from pathlib import Path
+          import yaml
 
-      - name: Build the zip and its SHA-256
+          zip_path, tag = Path(sys.argv[1]), sys.argv[2]
+          CATEGORIES = {"ai", "audio", "image", "location", "miscellaneous", "storage", "text", "ui", "video"}
+          REQUIRED_BRICK_FILES = ("__init__.py", "brick_config.yaml", "README.md")
+          REQUIRED_EXAMPLE_FILES = ("app.yaml", "python/main.py")
+          NS_RE = re.compile(r"^[a-z0-9-]+$")
+          NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+          HANDLE_RE = re.compile(r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$")
+          SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
+
+          def fail(msg):
+              print(f"::error::{msg}"); sys.exit(1)
+
+          # --- the archive, as the bot inspects it
+          try:
+              zf = zipfile.ZipFile(zip_path)
+          except zipfile.BadZipFile:
+              fail("the file is not a valid zip archive")
+          with zf:
+              if zf.testzip() is not None:
+                  fail("the zip archive is corrupt")
+              entries = []
+              for info in zf.infolist():
+                  name = info.filename
+                  if name.startswith(("/", "\\")) or ".." in Path(name).parts:
+                      fail(f"unsafe path in the zip: `{name}`")
+                  if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                      fail(f"symlinks are not allowed in the zip: `{name}`")
+                  parts = [p for p in name.split("/") if p]
+                  if not parts:
+                      continue
+                  if "__MACOSX" in parts or "__pycache__" in parts:
+                      fail(f"remove `__pycache__`/`__MACOSX` from the repository (`{name}`)")
+                  if not info.is_dir() and (info.external_attr >> 16) & 0o111:
+                      fail(f"executable files are not allowed in the zip: `{name}` (chmod -x and commit)")
+                  entries.append((parts, info.is_dir()))
+              roots = {p[0] for p, _ in entries}
+              if "bricks" in roots:
+                  prefix = ""
+              elif len(roots) == 1 and any(len(p) > 1 for p, _ in entries):
+                  prefix = next(iter(roots))
+              else:
+                  fail("the repository must have a `bricks/<brick_name>/` folder at its root")
+              rel = [(p[1:] if prefix else p, d) for p, d in entries]
+              files = ["/".join(p) for p, d in rel if not d and p]
+              brick_names = {p[1] for p, _ in rel if len(p) > 2 and p[0] == "bricks"}
+              if not brick_names:
+                  fail("no `bricks/<brick_name>/` folder found")
+              if len(brick_names) > 1:
+                  fail("`bricks/` must contain exactly one brick folder, found: " + ", ".join(sorted(brick_names)))
+              brick = next(iter(brick_names))
+              if not NAME_RE.match(brick):
+                  fail(f"the brick folder `bricks/{brick}/` must be a lowercase Python identifier ([a-z0-9_])")
+              for required in REQUIRED_BRICK_FILES:
+                  if f"bricks/{brick}/{required}" not in files:
+                      fail(f"`bricks/{brick}/{required}` is missing")
+              if any(p[0] == "examples" for p, _ in rel if p):
+                  fail(f"`examples/` must live inside the brick folder: move it to `bricks/{brick}/examples/`")
+              examples = sorted({p[3] for p, _ in rel if len(p) > 4 and p[:3] == ["bricks", brick, "examples"]})
+              for example in examples:
+                  for required in REQUIRED_EXAMPLE_FILES:
+                      if f"bricks/{brick}/examples/{example}/{required}" not in files:
+                          fail(f"`bricks/{brick}/examples/{example}/` is not an App Lab app: `{required}` is missing")
+              config_text = zf.read(f"{prefix + '/' if prefix else ''}bricks/{brick}/brick_config.yaml").decode("utf-8")
+
+          # --- brick_config.yaml, as the bot reads it
+          try:
+              cfg = yaml.safe_load(config_text)
+          except yaml.YAMLError as e:
+              fail(f"`brick_config.yaml` cannot be parsed: {e}")
+          if not isinstance(cfg, dict):
+              fail("`brick_config.yaml` must be a YAML mapping")
+          missing = [k for k in ("id", "version", "name", "description", "category", "author", "author_handle", "brick_repo") if not str(cfg.get(k) or "").strip()]
+          if missing:
+              fail("`brick_config.yaml` is missing required fields: " + ", ".join(f"`{k}`" for k in missing))
+          brick_id = str(cfg["id"]).strip()
+          if brick_id.count(":") != 1:
+              fail(f"`id: {brick_id}` must have the form `<namespace>:<brick_name>`")
+          ns, name = brick_id.split(":")
+          if not NS_RE.match(ns):
+              fail(f"namespace `{ns}` must match [a-z0-9-]")
+          if ns == "arduino":
+              fail("the `arduino` namespace is reserved")
+          if name != brick:
+              fail(f"brick name `{name}` in the id does not match the folder `bricks/{brick}/`: folder name, brick name and Python module must coincide")
+          handle = str(cfg["author_handle"]).strip().lstrip("@")
+          if not HANDLE_RE.match(handle):
+              fail(f"`author_handle: {handle}` is not a GitHub login")
+          version = str(cfg["version"]).strip()
+          if not SEMVER_RE.match(version):
+              fail(f"`version: {version}` is not a semantic version (MAJOR.MINOR.PATCH)")
+          if str(cfg["category"]).strip() not in CATEGORIES:
+              fail(f"`category: {cfg['category']}` is not one of: " + ", ".join(sorted(CATEGORIES)))
+          if not str(cfg["brick_repo"]).strip().startswith("https://"):
+              fail(f"`brick_repo: {cfg['brick_repo']}` must be an HTTPS URL")
+          variables = cfg.get("variables") or []
+          if not isinstance(variables, list) or any(not isinstance(v, dict) or not v.get("name") or not v.get("description") for v in variables):
+              fail("`variables` must be a list and every variable needs `name` and `description`")
+          if cfg.get("min_app_cli") is not None and not SEMVER_RE.match(str(cfg["min_app_cli"])):
+              fail(f"`min_app_cli: {cfg['min_app_cli']}` is not a semantic version")
+          if cfg.get("license") is not None and not str(cfg["license"]).strip():
+              fail("`license` is present but empty; use an SPDX identifier such as `MIT` or `MPL-2.0`")
+
+          # --- the release
+          if tag.lstrip("vV") != version:
+              fail(f"tag `{tag}` does not match `version: {version}` in brick_config.yaml")
+
+          print(f"ok: {brick_id} {version}, {len(files)} files, examples: {', '.join(examples) or 'none'}")
+          import os
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"name={brick}\nversion={version}\n")
+          PY
+
+      - name: Name the zip and compute its SHA-256
         id: zip
         env:
           NAME: ${{ steps.brick.outputs.name }}
           VERSION: ${{ steps.brick.outputs.version }}
         run: |
           set -euo pipefail
-          mkdir -p dist
           file="$NAME-$VERSION.zip"
-          # the tracked tree at the zip root: bricks/<name>/..., LICENSE, README.md, ...
-          git archive --format=zip -o "dist/$file" "$TAG"
+          mv dist/brick.zip "dist/$file"
           sha=$(sha256sum "dist/$file" | cut -d' ' -f1)
           echo "file=$file" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
@@ -96,3 +212,16 @@ jobs:
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
           echo "zip: $url"
           echo "sha256: $SHA"
+
+      - name: Mark the release as not submittable
+        if: failure()
+        env:
+          NOTES: ${{ github.event.release.body }}
+        run: |
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          {
+            printf '%s\n\n' "$NOTES"
+            printf '## ⚠️ Release not submittable to the App Bricks catalog\n\n'
+            printf 'The release workflow failed, so this release has no zip to submit. The reason is in [the workflow run](%s): fix the repository and publish a new release.\n' "$run_url"
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"

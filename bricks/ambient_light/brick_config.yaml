@@ -1,5 +1,5 @@
 id: dsammaruga:ambient_light
-version: 1.0.2
+version: 1.0.3
 name: Ambient Light
 description: Reads an ambient light sensor and reports illuminance in lux with a dark/bright state.
 category: miscellaneous

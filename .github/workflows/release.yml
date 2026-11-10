@@ -6,13 +6,14 @@
 #
 # Publish a release on GitHub (from the UI, or `gh release create <tag>`): this
 # workflow builds the zip of the repository tree at the tag, checks it with the
-# same rules the registry bot applies to a submission (layout, one brick,
-# required files, brick_config.yaml fields, tag = version), attaches it to the
-# release, and appends to the release notes the zip URL and its SHA-256, the two
-# values the App Bricks catalog submission form asks for, with a link to the
-# form already filled in. A zip that would be rejected by the registry fails
-# here, before the release carries it, and the release notes say so with a
-# link to the run.
+# same rules the registry bot applies to a submission (layout: one brick module
+# in src/<brick_name>/, docs/README.md, LICENSE, examples/<example>/ apps;
+# brick_config.yaml fields; tag = version), attaches it to the
+# release, and appends to the release notes a link that opens the submission
+# form of the Arduino App Brick registry already filled in: issue title (the
+# brick `name`), zip URL and SHA-256. A zip that would be rejected by the
+# registry fails here, before the release carries it, and the release notes say
+# so with a link to the run.
 #
 # Copy this file to .github/workflows/release.yml of your brick repository.
 # REGISTRY is the catalog repository the submission form belongs to.
@@ -49,7 +50,7 @@ jobs:
       - name: Build the zip of the tagged tree
         run: |
           mkdir -p dist
-          # the tracked tree at the zip root: bricks/<name>/..., LICENSE, README.md, ...
+          # the tracked tree at the zip root: src/<name>/..., docs/, examples/, LICENSE, ...
           git archive --format=zip -o dist/brick.zip "$TAG"
 
       # Mirror of the checks in .github/scripts/submit.py of the registry
@@ -63,8 +64,8 @@ jobs:
           import yaml
 
           zip_path, tag = Path(sys.argv[1]), sys.argv[2]
-          CATEGORIES = {"ai", "audio", "image", "location", "miscellaneous", "storage", "text", "ui", "video"}
-          REQUIRED_BRICK_FILES = ("__init__.py", "brick_config.yaml", "README.md")
+          REQUIRED_BRICK_FILES = ("__init__.py", "brick_config.yaml")
+          REQUIRED_REPO_FILES = ("docs/README.md", "LICENSE")
           REQUIRED_EXAMPLE_FILES = ("app.yaml", "python/main.py")
           NS_RE = re.compile(r"^[a-z0-9-]+$")
           NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -98,33 +99,42 @@ jobs:
                       fail(f"executable files are not allowed in the zip: `{name}` (chmod -x and commit)")
                   entries.append((parts, info.is_dir()))
               roots = {p[0] for p, _ in entries}
-              if "bricks" in roots:
+              if "src" in roots or "bricks" in roots:
                   prefix = ""
               elif len(roots) == 1 and any(len(p) > 1 for p, _ in entries):
                   prefix = next(iter(roots))
               else:
-                  fail("the repository must have a `bricks/<brick_name>/` folder at its root")
+                  fail("the repository must have a `src/<brick_name>/` folder at its root")
               rel = [(p[1:] if prefix else p, d) for p, d in entries]
-              files = ["/".join(p) for p, d in rel if not d and p]
-              brick_names = {p[1] for p, _ in rel if len(p) > 2 and p[0] == "bricks"}
-              if not brick_names:
-                  fail("no `bricks/<brick_name>/` folder found")
+              rel = [(p, d) for p, d in rel if p]
+              files = ["/".join(p) for p, d in rel if not d]
+              if not any(p[0] == "src" for p, _ in rel):
+                  if any(p[0] == "bricks" for p, _ in rel):
+                      fail("old layout with the brick in `bricks/<brick_name>/`: move the module to `src/<brick_name>/`, its README.md to `docs/README.md` and its examples to `examples/` at the repository root, next to `LICENSE`")
+                  fail("no `src/<brick_name>/` folder found")
+              loose = sorted("/".join(p) for p, d in rel if p[0] == "src" and len(p) == 2 and not d)
+              if loose:
+                  fail("`src/` must contain only the brick folder, found the file(s): " + ", ".join(loose))
+              brick_names = {p[1] for p, _ in rel if len(p) > 1 and p[0] == "src"}
               if len(brick_names) > 1:
-                  fail("`bricks/` must contain exactly one brick folder, found: " + ", ".join(sorted(brick_names)))
+                  fail("`src/` must contain exactly one brick folder, found: " + ", ".join(sorted(brick_names)))
               brick = next(iter(brick_names))
               if not NAME_RE.match(brick):
-                  fail(f"the brick folder `bricks/{brick}/` must be a lowercase Python identifier ([a-z0-9_])")
+                  fail(f"the brick folder `src/{brick}/` must be a lowercase Python identifier ([a-z0-9_])")
               for required in REQUIRED_BRICK_FILES:
-                  if f"bricks/{brick}/{required}" not in files:
-                      fail(f"`bricks/{brick}/{required}` is missing")
-              if any(p[0] == "examples" for p, _ in rel if p):
-                  fail(f"`examples/` must live inside the brick folder: move it to `bricks/{brick}/examples/`")
-              examples = sorted({p[3] for p, _ in rel if len(p) > 4 and p[:3] == ["bricks", brick, "examples"]})
+                  if f"src/{brick}/{required}" not in files:
+                      fail(f"`src/{brick}/{required}` is missing")
+              if any(p[:3] == ["src", brick, "examples"] for p, _ in rel):
+                  fail(f"`src/{brick}/examples/` is not part of the module: move `examples/` to the repository root, next to `src/`")
+              for required in REQUIRED_REPO_FILES:
+                  if required not in files:
+                      fail(f"`{required}` is missing")
+              examples = sorted({p[1] for p, _ in rel if len(p) > 2 and p[0] == "examples"})
               for example in examples:
                   for required in REQUIRED_EXAMPLE_FILES:
-                      if f"bricks/{brick}/examples/{example}/{required}" not in files:
-                          fail(f"`bricks/{brick}/examples/{example}/` is not an App Lab app: `{required}` is missing")
-              config_text = zf.read(f"{prefix + '/' if prefix else ''}bricks/{brick}/brick_config.yaml").decode("utf-8")
+                      if f"examples/{example}/{required}" not in files:
+                          fail(f"`examples/{example}/` is not an App Lab app: `{required}` is missing")
+              config_text = zf.read(f"{prefix + '/' if prefix else ''}src/{brick}/brick_config.yaml").decode("utf-8")
 
           # --- brick_config.yaml, as the bot reads it
           try:
@@ -133,7 +143,7 @@ jobs:
               fail(f"`brick_config.yaml` cannot be parsed: {e}")
           if not isinstance(cfg, dict):
               fail("`brick_config.yaml` must be a YAML mapping")
-          missing = [k for k in ("id", "version", "name", "description", "category", "author", "author_handle", "brick_repo") if not str(cfg.get(k) or "").strip()]
+          missing = [k for k in ("id", "version", "name", "description", "author", "author_handle", "brick_repo") if not str(cfg.get(k) or "").strip()]
           if missing:
               fail("`brick_config.yaml` is missing required fields: " + ", ".join(f"`{k}`" for k in missing))
           brick_id = str(cfg["id"]).strip()
@@ -145,15 +155,13 @@ jobs:
           if ns == "arduino":
               fail("the `arduino` namespace is reserved")
           if name != brick:
-              fail(f"brick name `{name}` in the id does not match the folder `bricks/{brick}/`: folder name, brick name and Python module must coincide")
+              fail(f"brick name `{name}` in the id does not match the folder `src/{brick}/`: folder name, brick name and Python module must coincide")
           handle = str(cfg["author_handle"]).strip().lstrip("@")
           if not HANDLE_RE.match(handle):
               fail(f"`author_handle: {handle}` is not a GitHub login")
           version = str(cfg["version"]).strip()
           if not SEMVER_RE.match(version):
               fail(f"`version: {version}` is not a semantic version (MAJOR.MINOR.PATCH)")
-          if str(cfg["category"]).strip() not in CATEGORIES:
-              fail(f"`category: {cfg['category']}` is not one of: " + ", ".join(sorted(CATEGORIES)))
           if not str(cfg["brick_repo"]).strip().startswith("https://"):
               fail(f"`brick_repo: {cfg['brick_repo']}` must be an HTTPS URL")
           variables = cfg.get("variables") or []
@@ -163,15 +171,32 @@ jobs:
               fail(f"`min_app_cli: {cfg['min_app_cli']}` is not a semantic version")
           if cfg.get("license") is not None and not str(cfg["license"]).strip():
               fail("`license` is present but empty; use an SPDX identifier such as `MIT` or `MPL-2.0`")
+          for key in ("supported_boards", "requires_services", "ai_frameworks_compatibility"):
+              v = cfg.get(key)
+              if v is not None and (not isinstance(v, list) or not v or not all(isinstance(x, str) and x.strip() for x in v)):
+                  fail(f"`{key}` must be a non-empty list of strings")
+          for key in ("requires_display", "model"):
+              v = cfg.get(key)
+              if v is not None and (not isinstance(v, str) or not v.strip()):
+                  fail(f"`{key}` must be a non-empty string")
+          ports = cfg.get("ports")
+          if ports is not None and (not isinstance(ports, list) or not ports or not all(isinstance(x, int) and not isinstance(x, bool) and 1 <= x <= 65535 for x in ports)):
+              fail("`ports` must be a non-empty list of integers between 1 and 65535")
+          mbb = cfg.get("model_by_boards")
+          if mbb is not None and (not isinstance(mbb, list) or not mbb or not all(isinstance(x, dict) and str(x.get("platform") or "").strip() and str(x.get("model") or "").strip() for x in mbb)):
+              fail("`model_by_boards` must be a non-empty list of `{platform, model}` entries")
 
           # --- the release
           if tag.lstrip("vV") != version:
               fail(f"tag `{tag}` does not match `version: {version}` in brick_config.yaml")
 
-          print(f"ok: {brick_id} {version}, {len(files)} files, examples: {', '.join(examples) or 'none'}")
+          api = "docs/api.md" if "docs/api.md" in files else "no docs/api.md"
+          print(f"ok: {brick_id} {version}, {len(files)} files, module src/{brick}/, {api}, examples: {', '.join(examples) or 'none'}")
           import os
+          # display name on one line: it becomes the prefilled issue title
+          display_name = " ".join(str(cfg["name"]).split())
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"name={brick}\nversion={version}\n")
+              out.write(f"name={brick}\nversion={version}\ndisplay_name={display_name}\n")
           PY
 
       - name: Name the zip and compute its SHA-256
@@ -197,17 +222,16 @@ jobs:
         env:
           FILE: ${{ steps.zip.outputs.file }}
           SHA: ${{ steps.zip.outputs.sha }}
+          DISPLAY_NAME: ${{ steps.brick.outputs.display_name }}
           NOTES: ${{ github.event.release.body }}
         run: |
           set -euo pipefail
           url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$FILE"
-          form=$(python3 -c 'import sys, urllib.parse as u; print("https://github.com/" + sys.argv[1] + "/issues/new?" + u.urlencode({"template": "submit-brick.yml", "zip-url": sys.argv[2], "sha256": sys.argv[3]}))' "$REGISTRY" "$url" "$SHA")
+          # the registry bot completes the title as "[submission] <name> <version>"
+          form=$(python3 -c 'import sys, urllib.parse as u; print("https://github.com/" + sys.argv[1] + "/issues/new?" + u.urlencode({"template": "submit-brick.yml", "title": sys.argv[2], "zip-url": sys.argv[3], "sha256": sys.argv[4]}, quote_via=u.quote))' "$REGISTRY" "$DISPLAY_NAME" "$url" "$SHA")
           {
-            printf '%s\n\n' "$NOTES"
-            printf '## Submit to the App Bricks catalog\n\n'
-            printf -- '- Zip URL: %s\n' "$url"
-            printf -- '- SHA-256: `%s`\n\n' "$SHA"
-            printf '[Open the submission form with these values](%s)\n' "$form"
+            printf '%s\n\n---\n\n' "$NOTES"
+            printf '[Click here to submit this release to Arduino® App Brick registry](%s)\n' "$form"
           } > "$RUNNER_TEMP/notes.md"
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
           echo "zip: $url"
@@ -220,8 +244,8 @@ jobs:
         run: |
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           {
-            printf '%s\n\n' "$NOTES"
-            printf '## ⚠️ Release not submittable to the App Bricks catalog\n\n'
+            printf '%s\n\n---\n\n' "$NOTES"
+            printf '## ⚠️ Release not submittable to the Arduino® App Brick registry\n\n'
             printf 'The release workflow failed, so this release has no zip to submit. The reason is in [the workflow run](%s): fix the repository and publish a new release.\n' "$run_url"
           } > "$RUNNER_TEMP/notes.md"
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"

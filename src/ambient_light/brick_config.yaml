@@ -1,13 +1,16 @@
 id: dsammaruga:ambient_light
-version: 1.0.6
+version: 1.1.0
 name: Ambient Light
-description: Reads an ambient light sensor and reports illuminance in lux with a dark/bright state.
+description: Reads an ambient light sensor, reports illuminance in lux with a dark/bright state and publishes the readings to a bundled MQTT broker.
 category: miscellaneous
 author: Dario Sammaruga
 author_handle: dsammaruga
 brick_repo: https://github.com/dsammaruga/ambient-light-brick
 license: MPL-2.0
+min_app_cli: 0.14.0
+icon: 💡
 supported_boards: [unoq, ventunoq]
+ports: [1883]
 variables:
   - name: LIGHT_THRESHOLD_LUX
     description: Illuminance below which the environment is reported as dark
@@ -15,3 +18,14 @@ variables:
   - name: LIGHT_PERIOD_SEC
     description: Seconds between two readings
     default_value: "2"
+  - name: MQTT_TOPIC
+    description: Topic the readings are published to as JSON; empty to disable publishing
+    default_value: "ambient_light/readings"
+  - name: MQTT_HOST
+    description: Host of the MQTT broker; the default is the broker bundled with the brick
+    default_value: "ambient-light-broker"
+    hidden: true
+  - name: MQTT_PORT
+    description: Port of the MQTT broker
+    default_value: "1883"
+    hidden: true

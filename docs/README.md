@@ -61,8 +61,15 @@ Set these variables in **Brick Configuration** in App Lab:
 |----------|-------------|---------|
 | `LIGHT_THRESHOLD_LUX` | Illuminance below which the environment is reported as dark | `100` |
 | `LIGHT_PERIOD_SEC` | Seconds between two readings | `2` |
+| `MQTT_TOPIC` | Topic the readings are published to as JSON; empty to disable publishing | `ambient_light/readings` |
+| `MQTT_HOST` | Host of the MQTT broker (hidden) | `ambient-light-broker` |
+| `MQTT_PORT` | Port of the MQTT broker (hidden) | `1883` |
 
-Both can also be passed to the constructor: `AmbientLight(threshold=50, period_sec=5)`.
+Threshold, period and topic can also be passed to the constructor: `AmbientLight(threshold=50, period_sec=5, mqtt_topic="")`.
+
+## MQTT broker
+
+The brick starts an MQTT broker next to the app: the `ambient-light-broker` container ([eclipse-mosquitto](https://hub.docker.com/_/eclipse-mosquitto) 2.0.22, pinned by digest in `brick_compose.yaml`), listening on port 1883 without authentication and bound to the board's localhost. Every reading is published as JSON (`{"lux": ..., "state": ..., "threshold": ...}`) to `MQTT_TOPIC`. Publishing is best effort: if the broker is not reachable the brick keeps reading and logs a warning. The `paho-mqtt` client is installed from the brick's `requirements.txt`.
 
 ## Methods
 

@@ -1,5 +1,5 @@
 id: dsammaruga:ambient_light
-version: 1.0.5
+version: 1.0.6
 name: Ambient Light
 description: Reads an ambient light sensor and reports illuminance in lux with a dark/bright state.
 category: miscellaneous
@@ -7,6 +7,7 @@ author: Dario Sammaruga
 author_handle: dsammaruga
 brick_repo: https://github.com/dsammaruga/ambient-light-brick
 license: MPL-2.0
+supported_boards: [unoq, ventunoq]
 variables:
   - name: LIGHT_THRESHOLD_LUX
     description: Illuminance below which the environment is reported as dark

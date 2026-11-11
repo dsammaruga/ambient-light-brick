@@ -76,4 +76,4 @@ Both can also be passed to the constructor: `AmbientLight(threshold=50, period_s
 
 ## License
 
-MPL-2.0. See the SPDX headers in the source files.
+MPL-2.0. See the `LICENSE` file at the repository root and the SPDX headers in the source files.

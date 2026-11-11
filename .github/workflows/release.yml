@@ -8,7 +8,8 @@
 # workflow builds the zip of the repository tree at the tag, checks it with the
 # same rules the registry bot applies to a submission (layout: one brick module
 # in src/<brick_name>/, docs/README.md, LICENSE, examples/<example>/ apps;
-# brick_config.yaml fields; tag = version), attaches it to the
+# brick_config.yaml fields; brick_compose.yaml images pinned by digest;
+# tag = version), attaches it to the
 # release, and appends to the release notes a link that opens the submission
 # form of the Arduino App Brick registry already filled in: issue title (the
 # brick `name`), zip URL and SHA-256. A zip that would be rejected by the
@@ -54,7 +55,7 @@ jobs:
           git archive --format=zip -o dist/brick.zip "$TAG"
 
       # Mirror of the checks in .github/scripts/submit.py of the registry
-      # (inspect_zip and read_config). Keep the two in sync.
+      # (inspect_zip, read_config and read_compose). Keep the two in sync.
       - name: Check the zip as the registry bot will
         id: brick
         run: |
@@ -135,6 +136,8 @@ jobs:
                       if f"examples/{example}/{required}" not in files:
                           fail(f"`examples/{example}/` is not an App Lab app: `{required}` is missing")
               config_text = zf.read(f"{prefix + '/' if prefix else ''}src/{brick}/brick_config.yaml").decode("utf-8")
+              compose_rel = f"src/{brick}/brick_compose.yaml"
+              compose_text = zf.read(f"{prefix + '/' if prefix else ''}{compose_rel}").decode("utf-8") if compose_rel in files else None
 
           # --- brick_config.yaml, as the bot reads it
           try:
@@ -186,12 +189,57 @@ jobs:
           if mbb is not None and (not isinstance(mbb, list) or not mbb or not all(isinstance(x, dict) and str(x.get("platform") or "").strip() and str(x.get("model") or "").strip() for x in mbb)):
               fail("`model_by_boards` must be a non-empty list of `{platform, model}` entries")
 
+          # --- brick_compose.yaml, as the bot reads it: every service image pinned by digest
+          SERVICE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+          REPO_RE = re.compile(
+              r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*(?::[0-9]+)?/)?"
+              r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$"
+          )
+          TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+          DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+          containers = []
+          if compose_text is not None:
+              where = compose_rel
+              try:
+                  compose = yaml.safe_load(compose_text)
+              except yaml.YAMLError as e:
+                  fail(f"`{where}` cannot be parsed: {e}")
+              services = compose.get("services") if isinstance(compose, dict) else None
+              if not isinstance(services, dict) or not services:
+                  fail(f"`{where}` must be a YAML mapping with a non-empty `services` mapping")
+              for service, spec in services.items():
+                  service = str(service)
+                  if not SERVICE_RE.match(service):
+                      fail(f"service name `{service}` in `{where}` must match [a-zA-Z0-9._-]")
+                  if spec is not None and not isinstance(spec, dict):
+                      fail(f"service `{service}` in `{where}` must be a mapping")
+                  spec = spec or {}
+                  if "build" in spec:
+                      fail(f"service `{service}` in `{where}`: `build` is not allowed, publish an image and pin it by digest")
+                  image = spec.get("image")
+                  if image is None:
+                      fail(f"service `{service}` in `{where}` has no `image`; publish an image and pin it by digest")
+                  if not isinstance(image, str) or not image.strip():
+                      fail(f"service `{service}` in `{where}`: `image` must be a non-empty string")
+                  image = image.strip()
+                  if "$" in image:
+                      fail(f"service `{service}` in `{where}`: image `{image}` uses variable interpolation, which cannot be verified; write the full image reference, pinned by digest")
+                  if "@" not in image:
+                      fail(f"service `{service}` in `{where}`: image `{image}` is not pinned by digest; use `<image>@sha256:<digest>` or `<image>:<tag>@sha256:<digest>` (see the registry README for how to get the digest)")
+                  ref, digest = image.rsplit("@", 1)
+                  if not DIGEST_RE.match(digest):
+                      fail(f"service `{service}` in `{where}`: image `{image}` has a malformed digest `{digest}`; expected `sha256:` followed by 64 lowercase hexadecimal characters")
+                  repo, tag_ = ref.rsplit(":", 1) if ":" in ref.rsplit("/", 1)[-1] else (ref, None)
+                  if not REPO_RE.match(repo) or (tag_ is not None and not TAG_RE.match(tag_)):
+                      fail(f"service `{service}` in `{where}`: `{image}` is not a valid image reference (`[registry/]repository[:tag]@sha256:<digest>`, repository in lowercase)")
+                  containers.append(f"{service} ({image})")
+
           # --- the release
           if tag.lstrip("vV") != version:
               fail(f"tag `{tag}` does not match `version: {version}` in brick_config.yaml")
 
           api = "docs/api.md" if "docs/api.md" in files else "no docs/api.md"
-          print(f"ok: {brick_id} {version}, {len(files)} files, module src/{brick}/, {api}, examples: {', '.join(examples) or 'none'}")
+          print(f"ok: {brick_id} {version}, {len(files)} files, module src/{brick}/, {api}, examples: {', '.join(examples) or 'none'}, containers: {', '.join(containers) or 'none'}")
           import os
           # display name on one line: it becomes the prefilled issue title
           display_name = " ".join(str(cfg["name"]).split())

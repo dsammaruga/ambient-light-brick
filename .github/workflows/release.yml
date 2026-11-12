@@ -7,7 +7,7 @@
 # Publish a release on GitHub (from the UI, or `gh release create <tag>`): this
 # workflow builds the zip of the repository tree at the tag, checks it with the
 # same rules the registry bot applies to a submission (layout: one brick module
-# in src/<brick_name>/, docs/README.md, LICENSE, examples/<example>/ apps;
+# in src/<brick_name>/ with its README.md, LICENSE, examples/<example>/ apps;
 # brick_config.yaml fields; brick_compose.yaml images pinned by digest;
 # tag = version), attaches it to the
 # release, and appends to the release notes a link that opens the submission
@@ -65,8 +65,8 @@ jobs:
           import yaml
 
           zip_path, tag = Path(sys.argv[1]), sys.argv[2]
-          REQUIRED_BRICK_FILES = ("__init__.py", "brick_config.yaml")
-          REQUIRED_REPO_FILES = ("docs/README.md", "LICENSE")
+          REQUIRED_BRICK_FILES = ("__init__.py", "brick_config.yaml", "README.md")
+          REQUIRED_REPO_FILES = ("LICENSE",)
           REQUIRED_EXAMPLE_FILES = ("app.yaml", "python/main.py")
           NS_RE = re.compile(r"^[a-z0-9-]+$")
           NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -111,7 +111,7 @@ jobs:
               files = ["/".join(p) for p, d in rel if not d]
               if not any(p[0] == "src" for p, _ in rel):
                   if any(p[0] == "bricks" for p, _ in rel):
-                      fail("old layout with the brick in `bricks/<brick_name>/`: move the module to `src/<brick_name>/`, its README.md to `docs/README.md` and its examples to `examples/` at the repository root, next to `LICENSE`")
+                      fail("old layout with the brick in `bricks/<brick_name>/`: move the module to `src/<brick_name>/` (its README.md with it) and its examples to `examples/` at the repository root, next to `LICENSE`")
                   fail("no `src/<brick_name>/` folder found")
               loose = sorted("/".join(p) for p, d in rel if p[0] == "src" and len(p) == 2 and not d)
               if loose:
@@ -124,7 +124,8 @@ jobs:
                   fail(f"the brick folder `src/{brick}/` must be a lowercase Python identifier ([a-z0-9_])")
               for required in REQUIRED_BRICK_FILES:
                   if f"src/{brick}/{required}" not in files:
-                      fail(f"`src/{brick}/{required}` is missing")
+                      moved = f": the brick documentation moved from `docs/README.md` to `src/{brick}/README.md`" if required == "README.md" and "docs/README.md" in files else ""
+                      fail(f"`src/{brick}/{required}` is missing{moved}")
               if any(p[:3] == ["src", brick, "examples"] for p, _ in rel):
                   fail(f"`src/{brick}/examples/` is not part of the module: move `examples/` to the repository root, next to `src/`")
               for required in REQUIRED_REPO_FILES:

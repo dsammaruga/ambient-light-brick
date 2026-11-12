@@ -1,5 +1,5 @@
 id: dsammaruga:ambient_light
-version: 1.1.0
+version: 1.1.1
 name: Ambient Light
 description: Reads an ambient light sensor, reports illuminance in lux with a dark/bright state and publishes the readings to a bundled MQTT broker.
 category: miscellaneous

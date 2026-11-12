@@ -3,11 +3,10 @@
 Sample brick for Arduino App Lab, used to test the App Bricks registry submission flow.
 
 ```
-src/ambient_light/          the brick module: __init__.py, brick_config.yaml,
+src/ambient_light/          the brick module: __init__.py, brick_config.yaml, README.md (the brick documentation),
                             requirements.txt (paho-mqtt), brick_compose.yaml (MQTT broker)
 examples/basic/             an App Lab app printing the readings
 examples/mqtt-monitor/      an App Lab app receiving the readings through MQTT
-docs/README.md              the brick documentation
 docs/api.md                 the API the brick provides
 LICENSE                     MPL-2.0
 .github/workflows/release.yml   the registry release workflow, copied from templates/release.yml

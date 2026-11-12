@@ -3,6 +3,6 @@ description: Prints simulated illuminance readings from the Ambient Light brick.
 icon: 💡
 ports: []
 bricks:
-- ambient-labs:ambient_light:
+- ambient_labs:ambient_light:
     variables:
       LIGHT_THRESHOLD_LUX: "150"

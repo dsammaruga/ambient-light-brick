@@ -60,7 +60,7 @@ jobs:
         id: brick
         run: |
           python - dist/brick.zip "$TAG" <<'PY'
-          import re, sys, zipfile
+          import keyword, re, sys, zipfile
           from pathlib import Path
           import yaml
 
@@ -68,8 +68,17 @@ jobs:
           REQUIRED_BRICK_FILES = ("__init__.py", "brick_config.yaml", "README.md")
           REQUIRED_REPO_FILES = ("LICENSE",)
           REQUIRED_EXAMPLE_FILES = ("app.yaml", "python/main.py")
-          NS_RE = re.compile(r"^[a-z0-9-]+$")
-          NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+          NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")  # namespace and brick name
+          IDENTIFIER_RULE = "a lowercase Python identifier (letters, digits and `_`, starting with a letter, not a Python keyword)"
+
+          def identifier_problem(what, value):
+              if keyword.iskeyword(value):
+                  return f"{what} `{value}` is a Python keyword: it must be {IDENTIFIER_RULE}"
+              if NAME_RE.match(value):
+                  return None
+              hint = value.replace("-", "_")
+              suggestion = f"; for example `{hint}`" if hint != value and NAME_RE.match(hint) and not keyword.iskeyword(hint) else ""
+              return f"{what} `{value}` must be {IDENTIFIER_RULE}{suggestion}"
           HANDLE_RE = re.compile(r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$")
           SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
 
@@ -120,8 +129,9 @@ jobs:
               if len(brick_names) > 1:
                   fail("`src/` must contain exactly one brick folder, found: " + ", ".join(sorted(brick_names)))
               brick = next(iter(brick_names))
-              if not NAME_RE.match(brick):
-                  fail(f"the brick folder `src/{brick}/` must be a lowercase Python identifier ([a-z0-9_])")
+              problem = identifier_problem("the brick folder", brick)
+              if problem:
+                  fail(f"{problem} (`src/{brick}/`)")
               for required in REQUIRED_BRICK_FILES:
                   if f"src/{brick}/{required}" not in files:
                       moved = f": the brick documentation moved from `docs/README.md` to `src/{brick}/README.md`" if required == "README.md" and "docs/README.md" in files else ""
@@ -154,8 +164,9 @@ jobs:
           if brick_id.count(":") != 1:
               fail(f"`id: {brick_id}` must have the form `<namespace>:<brick_name>`")
           ns, name = brick_id.split(":")
-          if not NS_RE.match(ns):
-              fail(f"namespace `{ns}` must match [a-z0-9-]")
+          problem = identifier_problem("namespace", ns) or identifier_problem("brick name", name)
+          if problem:
+              fail(problem)
           if ns == "arduino":
               fail("the `arduino` namespace is reserved")
           if name != brick:

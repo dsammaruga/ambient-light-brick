@@ -3,6 +3,6 @@ description: Subscribes to the readings the Ambient Light brick publishes on its
 icon: 📡
 ports: []
 bricks:
-- dsammaruga:ambient_light:
+- ambient-labs:ambient_light:
     variables:
       MQTT_TOPIC: "ambient_light/readings"

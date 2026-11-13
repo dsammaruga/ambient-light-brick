@@ -141,6 +141,9 @@ jobs:
               for required in REQUIRED_REPO_FILES:
                   if required not in files:
                       fail(f"`{required}` is missing")
+              misnamed = sorted(f for f in files if f.lower() == "docs/api.md" and f != "docs/API.md")
+              if misnamed:
+                  fail(f"`{misnamed[0]}` must be named `docs/API.md`, with this exact case: App Lab reads the API documentation from that path and file names are case-sensitive on the board")
               examples = sorted({p[1] for p, _ in rel if len(p) > 2 and p[0] == "examples"})
               for example in examples:
                   for required in REQUIRED_EXAMPLE_FILES:
@@ -250,7 +253,7 @@ jobs:
           if tag.lstrip("vV") != version:
               fail(f"tag `{tag}` does not match `version: {version}` in brick_config.yaml")
 
-          api = "docs/api.md" if "docs/api.md" in files else "no docs/api.md"
+          api = "docs/API.md" if "docs/API.md" in files else "no docs/API.md"
           print(f"ok: {brick_id} {version}, {len(files)} files, module src/{brick}/, {api}, examples: {', '.join(examples) or 'none'}, containers: {', '.join(containers) or 'none'}")
           import os
           # display name on one line: it becomes the prefilled issue title

@@ -7,7 +7,7 @@ src/ambient_light/          the brick module: __init__.py, brick_config.yaml, RE
                             requirements.txt (paho-mqtt), brick_compose.yaml (MQTT broker)
 examples/basic/             an App Lab app printing the readings
 examples/mqtt-monitor/      an App Lab app receiving the readings through MQTT
-docs/api.md                 the API the brick provides
+docs/API.md                 the API the brick provides
 LICENSE                     MPL-2.0
 .github/workflows/release.yml   the registry release workflow, copied from templates/release.yml
 ```

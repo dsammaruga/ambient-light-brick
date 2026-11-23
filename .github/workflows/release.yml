@@ -5,11 +5,13 @@
 # Release workflow for an App Lab brick repository.
 #
 # Publish a release on GitHub (from the UI, or `gh release create <tag>`): this
-# workflow builds the zip of the repository tree at the tag, checks it with the
+# workflow builds the zip of the release layout at the tag (src/<brick_name>/,
+# examples/, docs/API.md and LICENSE: the rest of the repository stays out), checks it with the
 # same rules the registry bot applies to a submission (layout: one brick module
 # in src/<brick_name>/ with its README.md, LICENSE, examples/<example>/ apps;
-# brick_config.yaml fields; brick_compose.yaml images pinned by digest;
-# tag = version), attaches it to the
+# brick_config.yaml fields; images of brick_compose.yaml and of its board
+# variants brick_compose.<board>.yaml pinned by digest;
+# tag = version, brick_repo = this repository), attaches it to the
 # release, and appends to the release notes a link that opens the submission
 # form of the Arduino App Brick registry already filled in: issue title (the
 # brick `name`), zip URL and SHA-256. A zip that would be rejected by the
@@ -41,18 +43,30 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name }}
 
+      # The Python of the App Bricks base image: the check compares the brick name
+      # with the standard library modules of this version
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Install dependencies
         run: python -m pip install --quiet "pyyaml==6.0.2"
 
-      - name: Build the zip of the tagged tree
+      - name: Build the zip of the release layout
         run: |
           mkdir -p dist
-          # the tracked tree at the zip root: src/<name>/..., docs/, examples/, LICENSE, ...
-          git archive --format=zip -o dist/brick.zip "$TAG"
+          # Only what the registry accepts in a release zip, at the zip root:
+          # src/<name>/, examples/, docs/API.md and LICENSE, as they are at the
+          # tag. The rest of the repository (README.md, .github/, tests, tools,
+          # ...) stays out: the zip is what App Lab extracts on the board.
+          paths=()
+          for path in src examples docs/API.md LICENSE; do
+            if [ -n "$(git ls-tree -r --name-only "$TAG" -- "$path" | head -n 1)" ]; then paths+=("$path"); fi
+          done
+          if [ "${#paths[@]}" -eq 0 ]; then
+            echo "::error::nothing to release: the repository has no src/ folder at tag $TAG"; exit 1
+          fi
+          git archive --format=zip -o dist/brick.zip "$TAG" -- "${paths[@]}"
 
       # Mirror of the checks in .github/scripts/submit.py of the registry
       # (inspect_zip, read_config and read_compose). Keep the two in sync.
@@ -68,6 +82,26 @@ jobs:
           REQUIRED_BRICK_FILES = ("__init__.py", "brick_config.yaml", "README.md")
           REQUIRED_REPO_FILES = ("LICENSE",)
           REQUIRED_EXAMPLE_FILES = ("app.yaml", "python/main.py")
+          # the Arduino App specification: app folder name, sketch folder files, runtime folders
+          EXAMPLE_NAME_RE = re.compile(r"^[A-Za-z0-9_ -]+$")
+          REQUIRED_SKETCH_FILES = ("sketch.ino", "sketch.yaml")
+          RESERVED_EXAMPLE_DIRS = (".cache", "data")
+
+          def example_problem(example, files):
+              base = f"examples/{example}/"
+              if not EXAMPLE_NAME_RE.match(example):
+                  return f"the example folder `examples/{example}/` has an invalid name: an app folder may contain only letters, digits, underscores, dashes and spaces"
+              for required in REQUIRED_EXAMPLE_FILES:
+                  if base + required not in files:
+                      return f"`{base}` is not an App Lab app: `{required}` is missing"
+              if any(f.startswith(base + "sketch/") for f in files):
+                  for required in REQUIRED_SKETCH_FILES:
+                      if f"{base}sketch/{required}" not in files:
+                          return f"`{base}sketch/` is not a valid sketch folder: `{required}` is missing"
+              for reserved in RESERVED_EXAMPLE_DIRS:
+                  if any(f.startswith(f"{base}{reserved}/") for f in files):
+                      return f"`{base}{reserved}/` must not be published: `{reserved}` is a folder the app fills at runtime, remove it from the repository"
+              return None
           NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")  # namespace and brick name
           IDENTIFIER_RULE = "a lowercase Python identifier (letters, digits and `_`, starting with a letter, not a Python keyword)"
 
@@ -79,6 +113,19 @@ jobs:
               hint = value.replace("-", "_")
               suggestion = f"; for example `{hint}`" if hint != value and NAME_RE.match(hint) and not keyword.iskeyword(hint) else ""
               return f"{what} `{value}` must be {IDENTIFIER_RULE}{suggestion}"
+
+          # an app imports a brick by its name: not the name of a module it already has.
+          # The standard library is the one of this interpreter, the Python of the base image.
+          RESERVED_BRICK_NAMES = ("arduino",)
+
+          def reserved_name_problem(what, value):
+              if value in sys.stdlib_module_names:
+                  owner = "a module of the Python standard library"
+              elif value in RESERVED_BRICK_NAMES:
+                  owner = "the package of the Arduino App framework"
+              else:
+                  return None
+              return f"{what} `{value}` is the name of {owner}: an app imports a brick by its name, so the two would clash; choose another name"
           HANDLE_RE = re.compile(r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$")
           SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
 
@@ -90,7 +137,23 @@ jobs:
               zf = zipfile.ZipFile(zip_path)
           except zipfile.BadZipFile:
               fail("the file is not a valid zip archive")
+          MAX_EXTRACTED_BYTES = 200 * 1024 * 1024
+          MAX_EXTRACTED_FILE_BYTES = 100 * 1024 * 1024
+
+          def human_size(size):
+              if size < 1024:
+                  return f"{size} B"
+              if size < 1024 * 1024:
+                  return f"{size / 1024:.1f} KB"
+              return f"{size / (1024 * 1024):.1f} MB"
+
           with zf:
+              largest = max(zf.infolist(), key=lambda i: i.file_size, default=None)
+              if largest is not None and largest.file_size > MAX_EXTRACTED_FILE_BYTES:
+                  fail(f"`{largest.filename}` is {human_size(largest.file_size)} once extracted: a file in the zip can be at most {human_size(MAX_EXTRACTED_FILE_BYTES)}")
+              extracted = sum(i.file_size for i in zf.infolist())
+              if extracted > MAX_EXTRACTED_BYTES:
+                  fail(f"the zip is {human_size(extracted)} once extracted: the limit is {human_size(MAX_EXTRACTED_BYTES)}")
               if zf.testzip() is not None:
                   fail("the zip archive is corrupt")
               entries = []
@@ -129,7 +192,7 @@ jobs:
               if len(brick_names) > 1:
                   fail("`src/` must contain exactly one brick folder, found: " + ", ".join(sorted(brick_names)))
               brick = next(iter(brick_names))
-              problem = identifier_problem("the brick folder", brick)
+              problem = identifier_problem("the brick folder", brick) or reserved_name_problem("the brick folder", brick)
               if problem:
                   fail(f"{problem} (`src/{brick}/`)")
               for required in REQUIRED_BRICK_FILES:
@@ -144,14 +207,26 @@ jobs:
               misnamed = sorted(f for f in files if f.lower() == "docs/api.md" and f != "docs/API.md")
               if misnamed:
                   fail(f"`{misnamed[0]}` must be named `docs/API.md`, with this exact case: App Lab reads the API documentation from that path and file names are case-sensitive on the board")
+              extra = set()
+              for f in files:
+                  if f in REQUIRED_REPO_FILES or f == "docs/API.md" or f.startswith((f"src/{brick}/", "examples/")):
+                      continue
+                  top, _, rest = f.partition("/")
+                  extra.add(f if not rest or top == "docs" else f"{top}/")
+              if extra:
+                  fail("the zip holds files outside the release layout: " + ", ".join(f"`{e}`" for e in sorted(extra)) + ". A release zip holds only `src/<brick_name>/`, `examples/`, `docs/API.md` and `LICENSE`: build it with the release workflow of the registry (`templates/release.yml`), which leaves the rest of the repository out")
               examples = sorted({p[1] for p, _ in rel if len(p) > 2 and p[0] == "examples"})
               for example in examples:
-                  for required in REQUIRED_EXAMPLE_FILES:
-                      if f"examples/{example}/{required}" not in files:
-                          fail(f"`examples/{example}/` is not an App Lab app: `{required}` is missing")
+                  problem = example_problem(example, files)
+                  if problem:
+                      fail(problem)
               config_text = zf.read(f"{prefix + '/' if prefix else ''}src/{brick}/brick_config.yaml").decode("utf-8")
-              compose_rel = f"src/{brick}/brick_compose.yaml"
-              compose_text = zf.read(f"{prefix + '/' if prefix else ''}{compose_rel}").decode("utf-8") if compose_rel in files else None
+              # brick_compose.yaml, then the board variants brick_compose.<board>.yaml that
+              # arduino-app-cli runs instead of it on that board: all checked the same way
+              compose_base = f"src/{brick}/brick_compose.yaml"
+              compose_rels = ([compose_base] if compose_base in files else []) + sorted(
+                  f for f in files if re.match(rf"^src/{brick}/brick_compose\.[^/]+\.yaml$", f))
+              compose_texts = {r: zf.read(f"{prefix + '/' if prefix else ''}{r}").decode("utf-8") for r in compose_rels}
 
           # --- brick_config.yaml, as the bot reads it
           try:
@@ -167,7 +242,7 @@ jobs:
           if brick_id.count(":") != 1:
               fail(f"`id: {brick_id}` must have the form `<namespace>:<brick_name>`")
           ns, name = brick_id.split(":")
-          problem = identifier_problem("namespace", ns) or identifier_problem("brick name", name)
+          problem = identifier_problem("namespace", ns) or identifier_problem("brick name", name) or reserved_name_problem("brick name", name)
           if problem:
               fail(problem)
           if ns == "arduino":
@@ -193,10 +268,18 @@ jobs:
               v = cfg.get(key)
               if v is not None and (not isinstance(v, list) or not v or not all(isinstance(x, str) and x.strip() for x in v)):
                   fail(f"`{key}` must be a non-empty list of strings")
+          unknown = [b.strip() for b in cfg.get("supported_boards") or [] if b.strip() not in ("unoq", "ventunoq")]
+          if unknown:
+              fail("`supported_boards` has unknown board(s) " + ", ".join(f"`{b}`" for b in unknown) + ": the boards are `unoq`, `ventunoq`")
           for key in ("requires_display", "model"):
               v = cfg.get(key)
               if v is not None and (not isinstance(v, str) or not v.strip()):
                   fail(f"`{key}` must be a non-empty string")
+          devices = cfg.get("required_devices")
+          if devices is not None and (not isinstance(devices, list) or not devices or not all(d in ("camera", "microphone", "speaker") for d in devices)):
+              fail("`required_devices` must be a non-empty list of `camera`, `microphone`, `speaker`; omit the field when the brick uses no device")
+          if cfg.get("mount_devices_into_container") is not None and not isinstance(cfg["mount_devices_into_container"], bool):
+              fail("`mount_devices_into_container` must be `true` or `false`")
           ports = cfg.get("ports")
           if ports is not None and (not isinstance(ports, list) or not ports or not all(isinstance(x, int) and not isinstance(x, bool) and 1 <= x <= 65535 for x in ports)):
               fail("`ports` must be a non-empty list of integers between 1 and 65535")
@@ -204,7 +287,7 @@ jobs:
           if mbb is not None and (not isinstance(mbb, list) or not mbb or not all(isinstance(x, dict) and str(x.get("platform") or "").strip() and str(x.get("model") or "").strip() for x in mbb)):
               fail("`model_by_boards` must be a non-empty list of `{platform, model}` entries")
 
-          # --- brick_compose.yaml, as the bot reads it: every service image pinned by digest
+          # --- brick_compose.yaml and its board variants, as the bot reads them: every service image pinned by digest
           SERVICE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
           REPO_RE = re.compile(
               r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*(?::[0-9]+)?/)?"
@@ -213,8 +296,7 @@ jobs:
           TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
           DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
           containers = []
-          if compose_text is not None:
-              where = compose_rel
+          for where, compose_text in compose_texts.items():
               try:
                   compose = yaml.safe_load(compose_text)
               except yaml.YAMLError as e:
@@ -247,11 +329,17 @@ jobs:
                   repo, tag_ = ref.rsplit(":", 1) if ":" in ref.rsplit("/", 1)[-1] else (ref, None)
                   if not REPO_RE.match(repo) or (tag_ is not None and not TAG_RE.match(tag_)):
                       fail(f"service `{service}` in `{where}`: `{image}` is not a valid image reference (`[registry/]repository[:tag]@sha256:<digest>`, repository in lowercase)")
-                  containers.append(f"{service} ({image})")
+                  containers.append(f"{service} ({image})" + ("" if where == compose_base else f" [{where.rsplit('/', 1)[-1]}]"))
 
           # --- the release
-          if tag.lstrip("vV") != version:
-              fail(f"tag `{tag}` does not match `version: {version}` in brick_config.yaml")
+          # the tag is the version, as it is: the registry links the documentation at the tag
+          if tag != version:
+              fail(f"tag `{tag}` is not `version: {version}` of brick_config.yaml: the tag of a release is its version, without a prefix (`1.2.0`, not `v1.2.0`)")
+          # the version is published from the repository the brick declares
+          import os
+          here = "https://github.com/" + os.environ["GITHUB_REPOSITORY"]
+          if str(cfg["brick_repo"]).strip().rstrip("/").removesuffix(".git").lower() != here.lower():
+              fail(f"`brick_repo: {cfg['brick_repo']}` is not this repository: set it to `{here}`")
 
           api = "docs/API.md" if "docs/API.md" in files else "no docs/API.md"
           print(f"ok: {brick_id} {version}, {len(files)} files, module src/{brick}/, {api}, examples: {', '.join(examples) or 'none'}, containers: {', '.join(containers) or 'none'}")

@@ -17,9 +17,11 @@
 # brick `name`), zip URL and SHA-256. A zip that would be rejected by the
 # registry fails here, before the release carries it, and the release notes say
 # so with a link to the run.
+# While it works, the release notes say that the brick is being packaged: the
+# note is replaced by the result.
 #
 # Copy this file to .github/workflows/release.yml of your brick repository.
-# REGISTRY is the catalog repository the submission form belongs to.
+# REGISTRY is the brick registry repository the submission form belongs to.
 name: Release
 
 on:
@@ -39,6 +41,21 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.event.release.tag_name }}
     steps:
+      # Immediate feedback on the release page. The steps that end the job
+      # rewrite the notes from the original text, so this note goes away when
+      # the result, good or bad, is written.
+      - name: Tell on the release that the brick is being packaged
+        continue-on-error: true
+        env:
+          NOTES: ${{ github.event.release.body }}
+        run: |
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          {
+            printf '%s\n\n---\n\n' "$NOTES"
+            printf '⏳ **Preparing this release for the Arduino® App Brick registry.** The zip of the brick and the submission link will be here in about a minute ([progress](%s)).\n' "$run_url"
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
@@ -322,7 +339,7 @@ jobs:
                   if "$" in image:
                       fail(f"service `{service}` in `{where}`: image `{image}` uses variable interpolation, which cannot be verified; write the full image reference, pinned by digest")
                   if "@" not in image:
-                      fail(f"service `{service}` in `{where}`: image `{image}` is not pinned by digest; use `<image>@sha256:<digest>` or `<image>:<tag>@sha256:<digest>` (see the registry README for how to get the digest)")
+                      fail(f"service `{service}` in `{where}`: image `{image}` is not pinned by digest; use `<image>@sha256:<digest>` or `<image>:<tag>@sha256:<digest>` (see `docs/brick-repository.md` in the registry for how to get the digest)")
                   ref, digest = image.rsplit("@", 1)
                   if not DIGEST_RE.match(digest):
                       fail(f"service `{service}` in `{where}`: image `{image}` has a malformed digest `{digest}`; expected `sha256:` followed by 64 lowercase hexadecimal characters")
